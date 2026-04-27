@@ -55,9 +55,10 @@ export async function runPipeline(
       throw new Error('no source provided');
     }
 
+    const railpackCmd = process.env.RAILPACK_BIN || 'railpack';
     emitter.emit('log', `Running railpack build in ${workdir}`);
     await appendLog(id, `railpack build start`);
-    await runCmd('railpack', ['build', '-t', imageTag], emitter, id, {
+    await runCmd(railpackCmd, ['build', '-t', imageTag], emitter, id, {
       cwd: workdir,
     });
     await appendLog(id, `railpack build finished`);
@@ -67,9 +68,14 @@ export async function runPipeline(
     await appendLog(id, `running image ${imageTag}`);
 
     const hostPort = 30000 + (hash(id) % 10000);
-    await runCmd('docker', ['rm', '-f', containerName], emitter, id).catch(
-      () => {},
-    );
+    // attempt to remove any existing container; redirect stderr so "No such
+    // container" messages don't spam logs when none exists
+    await runCmd(
+      'sh',
+      ['-c', `docker rm -f ${containerName} 2>/dev/null || true`],
+      emitter,
+      id,
+    ).catch(() => {});
     await runCmd(
       'docker',
       [
@@ -101,9 +107,22 @@ export async function runPipeline(
       if (!fs.existsSync(caddyDir)) fs.mkdirSync(caddyDir, { recursive: true });
       const snippet = `route /apps/${id}/* {\n  uri strip_prefix /apps/${id}\n  reverse_proxy 127.0.0.1:${hostPort}\n}\n`;
       fs.writeFileSync(path.join(caddyDir, `${id}.caddy`), snippet);
-      await runCmd('caddy', ['reload'], emitter, id).catch((e) =>
-        emitter.emit('log', `caddy reload failed: ${String(e)}`),
-      );
+      await runCmd('caddy', ['reload'], emitter, id).catch(async (e) => {
+        emitter.emit('log', `caddy reload failed: ${String(e)}; attempting docker exec fallback`);
+        // Try to reload Caddy inside the caddy container by finding a container
+        // whose name contains 'caddy' and running `caddy reload` there. This
+        // uses the docker CLI which should be available in the dev/deployer
+        // container when using the docker-socket approach.
+        await runCmd(
+          'sh',
+          [
+            '-c',
+            "docker exec $(docker ps -q -f name=caddy) caddy reload || echo 'docker exec caddy reload failed'",
+          ],
+          emitter,
+          id,
+        ).catch((e2) => emitter.emit('log', `docker exec caddy reload failed: ${String(e2)}`));
+      });
       await appendLog(id, `caddy updated -> /apps/${id}`);
     } catch (e: any) {
       emitter.emit('log', `Failed to update Caddy: ${String(e)}`);
@@ -165,9 +184,13 @@ async function stopDeployment(id: string, emitter: EventEmitterType) {
   // remove docker container if present
   if (info.container) {
     try {
-      await runCmd('docker', ['rm', '-f', info.container], emitter, id).catch(
-        () => {},
-      );
+      // same suppression for stop path
+      await runCmd(
+        'sh',
+        ['-c', `docker rm -f ${info.container} 2>/dev/null || true`],
+        emitter,
+        id,
+      ).catch(() => {});
     } catch (e) {}
   }
   await updateDeployment(id, { status: 'stopped' }).catch(() => {});
