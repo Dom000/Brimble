@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
-# Improved railpack stub.
+
 # - If a package.json with a build script exists, run the build.
 # - Prefer serving static build artifacts (dist/ or build/).
 # - If static artifacts are not present but a Next.js/Node app is detected,
 #   run it as an app server on port 8080.
+# - Also supports common Python, Go, and Java project layouts.
 # - Never fall back to directory-listing the project root.
 set -euo pipefail
 args=("$@")
@@ -122,8 +122,91 @@ RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --a
 EXPOSE 8080
 CMD ["sh","-lc","if [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then yarn start; elif [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then pnpm start; else npm run start; fi"]
 EOF
+
+# 4) Go app runtime
+elif [[ -f go.mod ]]; then
+  echo "railpack: detected go.mod — will build and run Go app"
+  cat > "$dockerfile_path" <<'EOF'
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY . /src
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/app .
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /out/app /app/app
+ENV PORT=8080
+EXPOSE 8080
+CMD ["/app/app"]
+EOF
+
+# 5) Java (Maven)
+elif [[ -f pom.xml ]]; then
+  echo "railpack: detected pom.xml — will build and run Java app"
+  cat > "$dockerfile_path" <<'EOF'
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+COPY . /src
+RUN mvn -DskipTests package
+
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /src/target/*.jar /app/app.jar
+ENV PORT=8080
+EXPOSE 8080
+CMD ["java","-jar","/app/app.jar"]
+EOF
+
+# 6) Java (Gradle)
+elif [[ -f build.gradle || -f build.gradle.kts || -f gradlew ]]; then
+  echo "railpack: detected Gradle project — will build and run Java app"
+  cat > "$dockerfile_path" <<'EOF'
+FROM gradle:8.10.2-jdk21 AS build
+WORKDIR /src
+COPY . /src
+RUN if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew build -x test; else gradle build -x test; fi
+
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /src/build/libs/*.jar /app/app.jar
+ENV PORT=8080
+EXPOSE 8080
+CMD ["java","-jar","/app/app.jar"]
+EOF
+
+# 7) Python app runtime
+elif [[ -f requirements.txt || -f pyproject.toml || -f setup.py ]]; then
+  py_cmd=""
+  if [[ -f manage.py ]]; then
+    py_cmd='python manage.py runserver 0.0.0.0:8080'
+  elif [[ -f app.py ]]; then
+    py_cmd='python app.py'
+  elif [[ -f main.py ]]; then
+    py_cmd='python main.py'
+  fi
+
+  if [[ -z "$py_cmd" ]]; then
+    echo "railpack: detected Python project but could not infer entrypoint (expected manage.py, app.py, or main.py)" >&2
+    exit 1
+  fi
+
+  echo "railpack: detected Python project — will run app server"
+  cat > "$dockerfile_path" <<EOF
+FROM python:3.11-slim
+WORKDIR /app
+COPY . /app
+RUN python -m pip install --no-cache-dir --upgrade pip && \
+    if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \
+    elif [ -f pyproject.toml ]; then pip install --no-cache-dir .; \
+    elif [ -f setup.py ]; then pip install --no-cache-dir .; \
+    fi
+ENV PORT=8080
+EXPOSE 8080
+CMD ["sh","-lc","$py_cmd"]
+EOF
 else
-  echo "railpack: no deployable artifact found. Expected dist/, build/, or a buildable Node app." >&2
+  echo "railpack: no deployable artifact found. Expected dist/, build/, or a recognized Node/Go/Java/Python app." >&2
   exit 1
 fi
 
