@@ -32,3 +32,7 @@ pnpm-debug.log*
 
 # Mac
 Icon
+
+# Prevent accidentally adding nested git repositories
+# Ignore any .git directories inside subfolders (allows top-level repo to remain)
+**/.git
