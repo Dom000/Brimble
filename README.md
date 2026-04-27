@@ -136,8 +136,3 @@ Deployer API quick endpoints
 - Stop a deployment: `POST /api/deployments/:id/stop` (returns immediately; stop runs in background)
 - Status/badge: `GET /api/deployments/:id/status` and `GET /api/deployments/:id/badge.svg`
 
-If you'd like, I can also add a short `CONTRIBUTING.md` with the most common developer workflows (deploy -> test -> stop) and recommended env settings.
-
----
-
-Updated: concise local and Docker run instructions.
