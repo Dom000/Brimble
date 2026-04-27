@@ -1,0 +1,4 @@
+route /apps/e39120f6-51c1-468a-9b0c-29ac79cacb51/* {
+  uri strip_prefix /apps/e39120f6-51c1-468a-9b0c-29ac79cacb51
+  reverse_proxy 127.0.0.1:36093
+}

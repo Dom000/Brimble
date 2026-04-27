@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Improved railpack stub: if a package.json with a build script exists,
-# run the build (using yarn) and then create a Dockerfile that serves the
-# built `dist` output. Otherwise fall back to serving the project root.
+# Improved railpack stub.
+# - If a package.json with a build script exists, run the build.
+# - Prefer serving static build artifacts (dist/ or build/).
+# - If static artifacts are not present but a Next.js/Node app is detected,
+#   run it as an app server on port 8080.
+# - Never fall back to directory-listing the project root.
 set -euo pipefail
 args=("$@")
 TAG=""
@@ -16,55 +19,121 @@ if [[ -z "$TAG" ]]; then
   exit 1
 fi
 pwd=$(pwd)
+dockerfile_path="$pwd/Dockerfile.railpack"
+trap 'rm -f "$dockerfile_path"' EXIT
 echo "railpack: building tag $TAG in $pwd"
 
-# If package.json exists and has a build script, try to build using yarn
-if [[ -f package.json ]] && grep -q '"build"' package.json; then
-  echo "railpack: detected package.json with build script — running build"
-  # Use corepack/yarn if available in environment
-  if command -v corepack >/dev/null 2>&1; then
-    corepack enable || true
-    corepack prepare yarn@3.5.0 --activate || true
-  fi
-  if command -v yarn >/dev/null 2>&1; then
-    echo "railpack: running yarn install && yarn build"
+has_package_json=0
+has_build_script=0
+has_start_script=0
+is_next_app=0
+
+if [[ -f package.json ]]; then
+  has_package_json=1
+  grep -q '"build"[[:space:]]*:' package.json && has_build_script=1 || true
+  grep -q '"start"[[:space:]]*:' package.json && has_start_script=1 || true
+  grep -q '"next"[[:space:]]*:' package.json && is_next_app=1 || true
+fi
+
+# Try to make package managers available via corepack when possible.
+if command -v corepack >/dev/null 2>&1; then
+  corepack enable || true
+  corepack prepare yarn@3.5.0 --activate || true
+fi
+
+install_deps() {
+  if [[ -f yarn.lock ]] && command -v yarn >/dev/null 2>&1; then
     yarn install --frozen-lockfile --silent || yarn install --silent
-    yarn build
+  elif [[ -f pnpm-lock.yaml ]] && command -v pnpm >/dev/null 2>&1; then
+    pnpm install --frozen-lockfile || pnpm install
+  elif command -v npm >/dev/null 2>&1; then
+    npm ci || npm install
   else
-    echo "railpack: yarn not found, skipping build step"
+    echo "railpack: no supported package manager found (yarn/pnpm/npm)" >&2
+    return 1
+  fi
+}
+
+if [[ $has_package_json -eq 1 && $has_build_script -eq 1 ]]; then
+  echo "railpack: detected package.json with build script — installing deps + build"
+  install_deps
+  if [[ -f yarn.lock ]] && command -v yarn >/dev/null 2>&1; then
+    yarn build
+  elif [[ -f pnpm-lock.yaml ]] && command -v pnpm >/dev/null 2>&1; then
+    pnpm build
+  else
+    npm run build
   fi
 fi
 
-# Choose what to copy into the image: prefer dist/ if present
+# Choose runtime strategy.
+# 1) Static artifact serve
 if [[ -d dist ]]; then
   echo "railpack: found dist/ — will serve built files"
-  cat > "$pwd/Dockerfile.railpack" <<EOF
+  cat > "$dockerfile_path" <<EOF
 FROM python:3.11-slim
 COPY dist /app
 WORKDIR /app
 EXPOSE 8080
 CMD ["python","-m","http.server","8080"]
 EOF
-else
-  echo "railpack: no dist/ — serving project root"
-  cat > "$pwd/Dockerfile.railpack" <<'EOF'
+elif [[ -d build ]]; then
+  echo "railpack: found build/ — will serve built files"
+  cat > "$dockerfile_path" <<EOF
 FROM python:3.11-slim
-COPY . /app
+COPY build /app
 WORKDIR /app
 EXPOSE 8080
 CMD ["python","-m","http.server","8080"]
 EOF
+
+# 2) Next.js app runtime
+elif [[ $has_package_json -eq 1 && $is_next_app -eq 1 && -d .next ]]; then
+  echo "railpack: found Next.js build output — will run app server"
+  cat > "$dockerfile_path" <<'EOF'
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
+COPY . /app
+RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
+    elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
+    else npm install --omit=dev --no-optional; fi
+EXPOSE 8080
+CMD ["sh","-lc","node_modules/.bin/next start -p 8080 -H 0.0.0.0"]
+EOF
+
+# 3) Generic Node app runtime
+elif [[ $has_package_json -eq 1 && $has_start_script -eq 1 ]]; then
+  echo "railpack: no static output, but start script detected — will run app server"
+  cat > "$dockerfile_path" <<'EOF'
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOST=0.0.0.0
+COPY . /app
+RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
+    elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
+    else npm install --omit=dev --no-optional; fi
+EXPOSE 8080
+CMD ["sh","-lc","if [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then yarn start; elif [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then pnpm start; else npm run start; fi"]
+EOF
+else
+  echo "railpack: no deployable artifact found. Expected dist/, build/, or a buildable Node app." >&2
+  exit 1
 fi
 
 # build
 echo "docker build -f Dockerfile.railpack -t $TAG ."
-docker build -f Dockerfile.railpack -t "$TAG" .
+docker build -f "$dockerfile_path" -t "$TAG" .
 rc=$?
 if [[ $rc -ne 0 ]]; then
   echo "railpack: docker build failed with code $rc" >&2
   exit $rc
 fi
 echo "railpack: build complete -> $TAG"
-# cleanup Dockerfile.railpack
-rm -f "$pwd/Dockerfile.railpack"
 exit 0
