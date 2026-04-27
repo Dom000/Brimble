@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Minimal railpack stub: creates a simple Dockerfile in the current directory
-# and builds it as the requested tag. Logs mimic a build.
+# Improved railpack stub: if a package.json with a build script exists,
+# run the build (using yarn) and then create a Dockerfile that serves the
+# built `dist` output. Otherwise fall back to serving the project root.
 set -euo pipefail
 args=("$@")
 TAG=""
@@ -16,13 +17,45 @@ if [[ -z "$TAG" ]]; then
 fi
 pwd=$(pwd)
 echo "railpack: building tag $TAG in $pwd"
-cat > "$pwd/Dockerfile.railpack" <<'EOF'
+
+# If package.json exists and has a build script, try to build using yarn
+if [[ -f package.json ]] && grep -q '"build"' package.json; then
+  echo "railpack: detected package.json with build script — running build"
+  # Use corepack/yarn if available in environment
+  if command -v corepack >/dev/null 2>&1; then
+    corepack enable || true
+    corepack prepare yarn@3.5.0 --activate || true
+  fi
+  if command -v yarn >/dev/null 2>&1; then
+    echo "railpack: running yarn install && yarn build"
+    yarn install --frozen-lockfile --silent || yarn install --silent || true
+    yarn build || echo "railpack: yarn build failed, continuing to create image"
+  else
+    echo "railpack: yarn not found, skipping build step"
+  fi
+fi
+
+# Choose what to copy into the image: prefer dist/ if present
+if [[ -d dist ]]; then
+  echo "railpack: found dist/ — will serve built files"
+  cat > "$pwd/Dockerfile.railpack" <<EOF
+FROM python:3.11-slim
+COPY dist /app
+WORKDIR /app
+EXPOSE 8080
+CMD ["python","-m","http.server","8080"]
+EOF
+else
+  echo "railpack: no dist/ — serving project root"
+  cat > "$pwd/Dockerfile.railpack" <<'EOF'
 FROM python:3.11-slim
 COPY . /app
 WORKDIR /app
 EXPOSE 8080
 CMD ["python","-m","http.server","8080"]
 EOF
+fi
+
 # build
 echo "docker build -f Dockerfile.railpack -t $TAG ."
 docker build -f Dockerfile.railpack -t "$TAG" .
