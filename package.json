@@ -1,0 +1,22 @@
+{
+  "name": "brimble-monorepo",
+  "private": true,
+  "packageManager": "yarn@3.5.0",
+  "workspaces": [
+    "brimble-backend",
+    "brimble-client"
+  ],
+  "scripts": {
+    "bootstrap": "yarn install",
+    "dev": "yarn bootstrap && yarn start:deployer & turbo run dev --parallel",
+    "build": "turbo run build",
+    "start": "yarn dev",
+    "start:deployer": "export PATH=\"$PWD/tools:$PATH\" && NODE_TLS_REJECT_UNAUTHORIZED=0 set -a && . ./.env && set +a && yarn workspace brimble-backend run deployer:dev",
+    "dev:db": "docker compose up -d",
+    "wait:db": "node tools/wait_for_postgres.js",
+    "migrate": "yarn workspace brimble-backend migrate"
+  },
+  "devDependencies": {
+    "turbo": "^1.10.10"
+  }
+}

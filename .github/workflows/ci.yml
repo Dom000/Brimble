@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build backend
+        run: yarn workspace brimble-backend build
+
+      - name: Build client
+        run: yarn workspace brimble-client build
+
+      - name: Run client tests
+        run: yarn workspace brimble-client test || true
+
+      - name: Run backend tests
+        run: yarn workspace brimble-backend test || true

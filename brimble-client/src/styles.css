@@ -1,0 +1,76 @@
+@import 'tailwindcss';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+:root {
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --error: #ef4444;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+
+[data-theme='dark'] {
+  --bg: #0b1220;
+  --card: #071021;
+  --text: #e6eef8;
+  --muted: #9aa9bf;
+  --accent: #60a5fa;
+  --error: #f87171;
+  --warn: #fbbf24;
+  --ok: #34d399;
+}
+
+.app-root {
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.06);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--muted);
+}
+.accent {
+  color: var(--accent);
+}
+.log-line {
+  display: block;
+  white-space: pre-wrap;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', 'Courier New',
+    monospace;
+}
+.log-error {
+  color: var(--error);
+}
+.log-warn {
+  color: var(--warn);
+}
+.log-ok {
+  color: var(--ok);
+}
+.log-info {
+  color: var(--muted);
+}

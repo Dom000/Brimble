@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Minimal caddy stub: accept `reload` and print a message.
+set -euo pipefail
+if [[ "$1" == "reload" ]]; then
+  echo "caddy: reload (stub)"
+  exit 0
+fi
+# no-op for other commands
+echo "caddy (stub): $*"
+exit 0

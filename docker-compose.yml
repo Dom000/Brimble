@@ -1,0 +1,57 @@
+version: "3.8"
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: brimble
+      POSTGRES_PASSWORD: brimble
+      POSTGRES_DB: brimble_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brimble -d brimble_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dev:
+    image: node:20
+    working_dir: /workspace
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn dev",
+      ]
+    volumes:
+      - ./:/workspace:cached
+      - /workspace/node_modules
+    environment:
+      DATABASE_URL: "postgres://brimble:brimble@db:5432/brimble_dev"
+      RAILPACK_BIN: "/workspace/tools/railpack"
+      CADDY_SNIPPETS_DIR: "/workspace/Caddyfile.d"
+      PG_SSL: "false"
+    ports:
+      - "3000:3000" # backend (nest)
+      - "5173:5173" # client (vite)
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.d:/etc/caddy/Caddyfile.d:rw
+    depends_on:
+      - dev
+      - db
+
+volumes:
+  db_data:

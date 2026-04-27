@@ -1,0 +1,26 @@
+{
+  # Caddy global options
+}
+
+:80 {
+  # Proxy to the deployer service inside Docker Compose
+  route /deployer/* {
+    uri strip_prefix /deployer
+    reverse_proxy dev:5100
+  }
+
+  # Proxy for any API endpoints handled by the backend app (if used)
+  route /api/* {
+    uri strip_prefix /api
+    reverse_proxy dev:3000
+  }
+
+  # Route deployed apps to the client dev server
+  route /apps/* {
+    uri strip_prefix /apps
+    reverse_proxy dev:5173
+  }
+
+  # Serve the SPA root (forward to Vite dev server)
+  reverse_proxy dev:5173
+}

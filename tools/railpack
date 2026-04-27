@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Minimal railpack stub: creates a simple Dockerfile in the current directory
+# and builds it as the requested tag. Logs mimic a build.
+set -euo pipefail
+args=("$@")
+TAG=""
+# parse -t <tag>
+for i in "${!args[@]}"; do
+  if [[ "${args[$i]}" == "-t" && $((i+1)) -lt ${#args[@]} ]]; then
+    TAG="${args[$((i+1))]}"
+  fi
+done
+if [[ -z "$TAG" ]]; then
+  echo "railpack: no -t tag provided" >&2
+  exit 1
+fi
+pwd=$(pwd)
+echo "railpack: building tag $TAG in $pwd"
+cat > "$pwd/Dockerfile.railpack" <<'EOF'
+FROM python:3.11-slim
+COPY . /app
+WORKDIR /app
+EXPOSE 8080
+CMD ["python","-m","http.server","8080"]
+EOF
+# build
+echo "docker build -f Dockerfile.railpack -t $TAG ."
+docker build -f Dockerfile.railpack -t "$TAG" .
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  echo "railpack: docker build failed with code $rc" >&2
+  exit $rc
+fi
+echo "railpack: build complete -> $TAG"
+# cleanup Dockerfile.railpack
+rm -f "$pwd/Dockerfile.railpack"
+exit 0
