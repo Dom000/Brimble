@@ -1,4 +1,4 @@
-FROM node:20
+FROM node:22
 
 # Install Docker CLI (using the distro package for simplicity)
 RUN apt-get update \
