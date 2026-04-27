@@ -59,9 +59,23 @@ export async function runPipeline(
     const railpackCmd = process.env.RAILPACK_BIN || 'railpack';
     emitter.emit('log', `Running railpack build in ${workdir}`);
     await appendLog(id, `railpack build start`);
-    await runCmd(railpackCmd, ['build', '-t', imageTag], emitter, id, {
-      cwd: workdir,
-    });
+    // Run railpack but capture combined stdout/stderr so failures surface useful logs
+    const railpackRun = await runCmdCombined(
+      railpackCmd,
+      ['build', '-t', imageTag],
+      emitter,
+      id,
+      { cwd: workdir },
+    );
+    if (railpackRun.code !== 0) {
+      await appendLog(
+        id,
+        `railpack failed (code ${railpackRun.code}): ${railpackRun.out}`,
+      );
+      throw new Error(
+        `${railpackCmd} exited ${railpackRun.code}: ${railpackRun.out}`,
+      );
+    }
     await appendLog(id, `railpack build finished`);
 
     updateDeployment(id, { status: 'deploying', image_tag: imageTag });
@@ -208,6 +222,47 @@ function runCmdOutput(
       if (info) info.procs.delete(p);
       if (code === 0) resolve(out.trim());
       else reject(new Error(`${cmd} exited ${code}`));
+    });
+  });
+}
+
+// Run a command and capture combined stdout+stderr; always resolves with
+// { code, out } so callers can surface output on non-zero exit codes.
+function runCmdCombined(
+  cmd: string,
+  args: string[],
+  emitter: EventEmitterType,
+  id: string,
+  opts: any = {},
+): Promise<{ code: number; out: string }> {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    const info = activeMap.get(id);
+    if (info) info.procs.add(p);
+    let out = '';
+    p.stdout.on('data', (d) => {
+      const s = d.toString();
+      out += s;
+      emitter.emit('log', s);
+      appendLog(id, s).catch(() => {});
+    });
+    p.stderr.on('data', (d) => {
+      const s = d.toString();
+      out += s;
+      emitter.emit('log', s);
+      appendLog(id, s).catch(() => {});
+    });
+    p.on('error', (err) => {
+      const info = activeMap.get(id);
+      if (info) info.procs.delete(p);
+      const msg = String(err?.message || err);
+      out += `\nERROR: ${msg}`;
+      resolve({ code: 1, out: out.trim() });
+    });
+    p.on('close', (code) => {
+      const info = activeMap.get(id);
+      if (info) info.procs.delete(p);
+      resolve({ code: code ?? 0, out: out.trim() });
     });
   });
 }

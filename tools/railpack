@@ -1,9 +1,9 @@
-
+#!/usr/bin/env bash
+# Improved railpack stub.
 # - If a package.json with a build script exists, run the build.
 # - Prefer serving static build artifacts (dist/ or build/).
 # - If static artifacts are not present but a Next.js/Node app is detected,
 #   run it as an app server on port 8080.
-# - Also supports common Python, Go, and Java project layouts.
 # - Never fall back to directory-listing the project root.
 set -euo pipefail
 args=("$@")
@@ -97,10 +97,7 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV HOSTNAME=0.0.0.0
 COPY . /app
-RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
-    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
-    elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
-    else npm install --omit=dev --no-optional; fi
+
 EXPOSE 8080
 CMD ["sh","-lc","node_modules/.bin/next start -p 8080 -H 0.0.0.0"]
 EOF
@@ -115,98 +112,12 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV HOST=0.0.0.0
 COPY . /app
-RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
-    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
-    elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
-    else npm install --omit=dev --no-optional; fi
+
 EXPOSE 8080
 CMD ["sh","-lc","if [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then yarn start; elif [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then pnpm start; else npm run start; fi"]
 EOF
-
-# 4) Go app runtime
-elif [[ -f go.mod ]]; then
-  echo "railpack: detected go.mod — will build and run Go app"
-  cat > "$dockerfile_path" <<'EOF'
-FROM golang:1.22-alpine AS build
-WORKDIR /src
-COPY . /src
-RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/app .
-
-FROM alpine:3.20
-WORKDIR /app
-COPY --from=build /out/app /app/app
-ENV PORT=8080
-EXPOSE 8080
-CMD ["/app/app"]
-EOF
-
-# 5) Java (Maven)
-elif [[ -f pom.xml ]]; then
-  echo "railpack: detected pom.xml — will build and run Java app"
-  cat > "$dockerfile_path" <<'EOF'
-FROM maven:3.9-eclipse-temurin-21 AS build
-WORKDIR /src
-COPY . /src
-RUN mvn -DskipTests package
-
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-COPY --from=build /src/target/*.jar /app/app.jar
-ENV PORT=8080
-EXPOSE 8080
-CMD ["java","-jar","/app/app.jar"]
-EOF
-
-# 6) Java (Gradle)
-elif [[ -f build.gradle || -f build.gradle.kts || -f gradlew ]]; then
-  echo "railpack: detected Gradle project — will build and run Java app"
-  cat > "$dockerfile_path" <<'EOF'
-FROM gradle:8.10.2-jdk21 AS build
-WORKDIR /src
-COPY . /src
-RUN if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew build -x test; else gradle build -x test; fi
-
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-COPY --from=build /src/build/libs/*.jar /app/app.jar
-ENV PORT=8080
-EXPOSE 8080
-CMD ["java","-jar","/app/app.jar"]
-EOF
-
-# 7) Python app runtime
-elif [[ -f requirements.txt || -f pyproject.toml || -f setup.py ]]; then
-  py_cmd=""
-  if [[ -f manage.py ]]; then
-    py_cmd='python manage.py runserver 0.0.0.0:8080'
-  elif [[ -f app.py ]]; then
-    py_cmd='python app.py'
-  elif [[ -f main.py ]]; then
-    py_cmd='python main.py'
-  fi
-
-  if [[ -z "$py_cmd" ]]; then
-    echo "railpack: detected Python project but could not infer entrypoint (expected manage.py, app.py, or main.py)" >&2
-    exit 1
-  fi
-
-  echo "railpack: detected Python project — will run app server"
-  cat > "$dockerfile_path" <<EOF
-FROM python:3.11-slim
-WORKDIR /app
-COPY . /app
-RUN python -m pip install --no-cache-dir --upgrade pip && \
-    if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \
-    elif [ -f pyproject.toml ]; then pip install --no-cache-dir .; \
-    elif [ -f setup.py ]; then pip install --no-cache-dir .; \
-    fi
-ENV PORT=8080
-EXPOSE 8080
-CMD ["sh","-lc","$py_cmd"]
-EOF
 else
-  echo "railpack: no deployable artifact found. Expected dist/, build/, or a recognized Node/Go/Java/Python app." >&2
+  echo "railpack: no deployable artifact found. Expected dist/, build/, or a buildable Node app." >&2
   exit 1
 fi
 
@@ -220,3 +131,227 @@ if [[ $rc -ne 0 ]]; then
 fi
 echo "railpack: build complete -> $TAG"
 exit 0
+
+
+
+
+
+#dead code for other programming languages, to be implemented in the future:
+# -------------------------------
+
+
+# set -euo pipefail
+# args=("$@")
+# TAG=""
+# # parse -t <tag>
+# for i in "${!args[@]}"; do
+#   if [[ "${args[$i]}" == "-t" && $((i+1)) -lt ${#args[@]} ]]; then
+#     TAG="${args[$((i+1))]}"
+#   fi
+# done
+# if [[ -z "$TAG" ]]; then
+#   echo "railpack: no -t tag provided" >&2
+#   exit 1
+# fi
+# pwd=$(pwd)
+# dockerfile_path="$pwd/Dockerfile.railpack"
+# trap 'rm -f "$dockerfile_path"' EXIT
+# echo "railpack: building tag $TAG in $pwd"
+
+# has_package_json=0
+# has_build_script=0
+# has_start_script=0
+# is_next_app=0
+
+# if [[ -f package.json ]]; then
+#   has_package_json=1
+#   grep -q '"build"[[:space:]]*:' package.json && has_build_script=1 || true
+#   grep -q '"start"[[:space:]]*:' package.json && has_start_script=1 || true
+#   grep -q '"next"[[:space:]]*:' package.json && is_next_app=1 || true
+# fi
+
+# # Try to make package managers available via corepack when possible.
+# if command -v corepack >/dev/null 2>&1; then
+#   corepack enable || true
+#   corepack prepare yarn@3.5.0 --activate || true
+# fi
+
+# install_deps() {
+#   if [[ -f yarn.lock ]] && command -v yarn >/dev/null 2>&1; then
+#     yarn install --frozen-lockfile --silent || yarn install --silent
+#   elif [[ -f pnpm-lock.yaml ]] && command -v pnpm >/dev/null 2>&1; then
+#     pnpm install --frozen-lockfile || pnpm install
+#   elif command -v npm >/dev/null 2>&1; then
+#     npm ci || npm install
+#   else
+#     echo "railpack: no supported package manager found (yarn/pnpm/npm)" >&2
+#     return 1
+#   fi
+# }
+
+# if [[ $has_package_json -eq 1 && $has_build_script -eq 1 ]]; then
+#   echo "railpack: detected package.json with build script — installing deps + build"
+#   install_deps
+#   if [[ -f yarn.lock ]] && command -v yarn >/dev/null 2>&1; then
+#     yarn build
+#   elif [[ -f pnpm-lock.yaml ]] && command -v pnpm >/dev/null 2>&1; then
+#     pnpm build
+#   else
+#     npm run build
+#   fi
+# fi
+
+# # Choose runtime strategy.
+# # 1) Static artifact serve
+# if [[ -d dist ]]; then
+#   echo "railpack: found dist/ — will serve built files"
+#   cat > "$dockerfile_path" <<EOF
+# FROM python:3.11-slim
+# COPY dist /app
+# WORKDIR /app
+# EXPOSE 8080
+# CMD ["python","-m","http.server","8080"]
+# EOF
+# elif [[ -d build ]]; then
+#   echo "railpack: found build/ — will serve built files"
+#   cat > "$dockerfile_path" <<EOF
+# FROM python:3.11-slim
+# COPY build /app
+# WORKDIR /app
+# EXPOSE 8080
+# CMD ["python","-m","http.server","8080"]
+# EOF
+
+# # 2) Next.js app runtime
+# elif [[ $has_package_json -eq 1 && $is_next_app -eq 1 && -d .next ]]; then
+#   echo "railpack: found Next.js build output — will run app server"
+#   cat > "$dockerfile_path" <<'EOF'
+# FROM node:20-alpine
+# WORKDIR /app
+# ENV NODE_ENV=production
+# ENV PORT=8080
+# ENV HOSTNAME=0.0.0.0
+# COPY . /app
+# RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
+#     elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
+#     elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
+#     else npm install --omit=dev --no-optional; fi
+# EXPOSE 8080
+# CMD ["sh","-lc","node_modules/.bin/next start -p 8080 -H 0.0.0.0"]
+# EOF
+
+# # 3) Generic Node app runtime
+# elif [[ $has_package_json -eq 1 && $has_start_script -eq 1 ]]; then
+#   echo "railpack: no static output, but start script detected — will run app server"
+#   cat > "$dockerfile_path" <<'EOF'
+# FROM node:20-alpine
+# WORKDIR /app
+# ENV NODE_ENV=production
+# ENV PORT=8080
+# ENV HOST=0.0.0.0
+# COPY . /app
+# RUN if [ -f yarn.lock ]; then corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --production=true --ignore-optional --silent || yarn install --production=true --ignore-optional --silent; \
+#     elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --prod --no-optional || pnpm install --prod --no-optional; \
+#     elif [ -f package-lock.json ]; then npm ci --omit=dev --no-optional || npm install --omit=dev --no-optional; \
+#     else npm install --omit=dev --no-optional; fi
+# EXPOSE 8080
+# CMD ["sh","-lc","if [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then yarn start; elif [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then pnpm start; else npm run start; fi"]
+# EOF
+
+# # 4) Go app runtime
+# elif [[ -f go.mod ]]; then
+#   echo "railpack: detected go.mod — will build and run Go app"
+#   cat > "$dockerfile_path" <<'EOF'
+# FROM golang:1.22-alpine AS build
+# WORKDIR /src
+# COPY . /src
+# RUN go mod download
+# RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/app .
+
+# FROM alpine:3.20
+# WORKDIR /app
+# COPY --from=build /out/app /app/app
+# ENV PORT=8080
+# EXPOSE 8080
+# CMD ["/app/app"]
+# EOF
+
+# # 5) Java (Maven)
+# elif [[ -f pom.xml ]]; then
+#   echo "railpack: detected pom.xml — will build and run Java app"
+#   cat > "$dockerfile_path" <<'EOF'
+# FROM maven:3.9-eclipse-temurin-21 AS build
+# WORKDIR /src
+# COPY . /src
+# RUN mvn -DskipTests package
+
+# FROM eclipse-temurin:21-jre
+# WORKDIR /app
+# COPY --from=build /src/target/*.jar /app/app.jar
+# ENV PORT=8080
+# EXPOSE 8080
+# CMD ["java","-jar","/app/app.jar"]
+# EOF
+
+# # 6) Java (Gradle)
+# elif [[ -f build.gradle || -f build.gradle.kts || -f gradlew ]]; then
+#   echo "railpack: detected Gradle project — will build and run Java app"
+#   cat > "$dockerfile_path" <<'EOF'
+# FROM gradle:8.10.2-jdk21 AS build
+# WORKDIR /src
+# COPY . /src
+# RUN if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew build -x test; else gradle build -x test; fi
+
+# FROM eclipse-temurin:21-jre
+# WORKDIR /app
+# COPY --from=build /src/build/libs/*.jar /app/app.jar
+# ENV PORT=8080
+# EXPOSE 8080
+# CMD ["java","-jar","/app/app.jar"]
+# EOF
+
+# # 7) Python app runtime
+# elif [[ -f requirements.txt || -f pyproject.toml || -f setup.py ]]; then
+#   py_cmd=""
+#   if [[ -f manage.py ]]; then
+#     py_cmd='python manage.py runserver 0.0.0.0:8080'
+#   elif [[ -f app.py ]]; then
+#     py_cmd='python app.py'
+#   elif [[ -f main.py ]]; then
+#     py_cmd='python main.py'
+#   fi
+
+#   if [[ -z "$py_cmd" ]]; then
+#     echo "railpack: detected Python project but could not infer entrypoint (expected manage.py, app.py, or main.py)" >&2
+#     exit 1
+#   fi
+
+#   echo "railpack: detected Python project — will run app server"
+#   cat > "$dockerfile_path" <<EOF
+# FROM python:3.11-slim
+# WORKDIR /app
+# COPY . /app
+# RUN python -m pip install --no-cache-dir --upgrade pip && \
+#     if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \
+#     elif [ -f pyproject.toml ]; then pip install --no-cache-dir .; \
+#     elif [ -f setup.py ]; then pip install --no-cache-dir .; \
+#     fi
+# ENV PORT=8080
+# EXPOSE 8080
+# CMD ["sh","-lc","$py_cmd"]
+# EOF
+# else
+#   echo "railpack: no deployable artifact found. Expected dist/, build/, or a recognized Node/Go/Java/Python app." >&2
+#   exit 1
+# fi
+
+# # build
+# echo "docker build -f Dockerfile.railpack -t $TAG ."
+# docker build -f "$dockerfile_path" -t "$TAG" .
+# rc=$?
+# if [[ $rc -ne 0 ]]; then
+#   echo "railpack: docker build failed with code $rc" >&2
+#   exit $rc
+# fi
+# echo "railpack: build complete -> $TAG"
+# exit 0
