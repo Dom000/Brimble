@@ -36,30 +36,64 @@ if (
 }
 
 // Configure pool with sensible defaults and keep-alive to avoid per-request
-// connection handshakes which can be expensive for remote DBs.
+// connection handshakes which can be expensive for remote DBs. Increase the
+// default connection timeout to be more tolerant of slow or cold DBs and
+// allow tuning via environment variables.
 const pool = new Pool(
   sslOption
     ? {
         connectionString,
         ssl: sslOption as any,
-        // tune pool: allow more concurrent clients and reuse connections
         max: parseInt(process.env.PG_POOL_MAX || '10', 10),
-        idleTimeoutMillis: parseInt(process.env.PG_IDLE_MS || '60000', 10),
+        idleTimeoutMillis: parseInt(process.env.PG_IDLE_MS || '120000', 10),
         connectionTimeoutMillis: parseInt(
-          process.env.PG_CONN_TIMEOUT_MS || '15000',
+          process.env.PG_CONN_TIMEOUT_MS || '30000',
           10,
         ),
       }
     : {
         connectionString,
         max: parseInt(process.env.PG_POOL_MAX || '10', 10),
-        idleTimeoutMillis: parseInt(process.env.PG_IDLE_MS || '60000', 10),
+        idleTimeoutMillis: parseInt(process.env.PG_IDLE_MS || '120000', 10),
         connectionTimeoutMillis: parseInt(
-          process.env.PG_CONN_TIMEOUT_MS || '15000',
+          process.env.PG_CONN_TIMEOUT_MS || '30000',
           10,
         ),
       },
 );
+
+// Log and surface unexpected pool errors instead of letting them crash the
+// process silently. These are generally non-fatal and indicate connectivity
+// problems with the Postgres server.
+pool.on('error', (err: Error) => {
+  console.error('pg pool error', err?.message || err);
+});
+
+// Helper: run a query with retries/backoff for transient connection issues.
+async function queryWithRetry(sql: string, params: any[] = [], maxRetries = 3) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await pool.query(sql, params);
+    } catch (e: any) {
+      attempt++;
+      const msg = e?.message || String(e);
+      // If it's a connection timeout or transient network error, retry.
+      if (
+        attempt < maxRetries &&
+        /timeout exceeded when trying to connect|ECONNRESET|ENETUNREACH|connect timed out/i.test(
+          msg,
+        )
+      ) {
+        console.warn(`query attempt ${attempt} failed: ${msg}; retrying`);
+        await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
+        continue;
+      }
+      // otherwise rethrow
+      throw e;
+    }
+  }
+}
 
 // Warm up one connection at startup to reduce first-request latency.
 (async function warmPool() {
@@ -67,13 +101,13 @@ const pool = new Pool(
     const c = await pool.connect();
     c.release();
     console.log('pg pool warmed');
-  } catch (e) {
+  } catch (e: any) {
     console.warn('pg pool warm failed', e?.message ?? e);
   }
 })();
 
 async function ensureSchema() {
-  await pool.query(`
+  await queryWithRetry(`
     CREATE TABLE IF NOT EXISTS deployments (
       id TEXT PRIMARY KEY,
       created_at BIGINT,
@@ -84,10 +118,10 @@ async function ensureSchema() {
     );
   `);
   // index to speed up queries ordering by created_at (most recent first)
-  await pool.query(
+  await queryWithRetry(
     `CREATE INDEX IF NOT EXISTS idx_deployments_created_at ON deployments (created_at DESC)`,
   );
-  await pool.query(`
+  await queryWithRetry(`
     CREATE TABLE IF NOT EXISTS logs (
       id BIGSERIAL PRIMARY KEY,
       deployment_id TEXT REFERENCES deployments(id) ON DELETE CASCADE,
@@ -109,7 +143,7 @@ export async function insertDeployment(d: {
   image_tag?: string;
   url?: string;
 }) {
-  await pool.query(
+  await queryWithRetry(
     `INSERT INTO deployments (id, created_at, git_url, status, image_tag, url) VALUES ($1,$2,$3,$4,$5,$6)`,
     [
       d.id,
@@ -131,7 +165,7 @@ export async function updateDeployment(
   const status = patch.status ?? current.status;
   const image_tag = patch.image_tag ?? current.image_tag;
   const url = patch.url ?? current.url;
-  await pool.query(
+  await queryWithRetry(
     `UPDATE deployments SET status=$1, image_tag=$2, url=$3 WHERE id=$4`,
     [status, image_tag, url, id],
   );
@@ -139,13 +173,15 @@ export async function updateDeployment(
 }
 
 export async function getDeployment(id: string) {
-  const r = await pool.query('SELECT * FROM deployments WHERE id = $1', [id]);
+  const r = await queryWithRetry('SELECT * FROM deployments WHERE id = $1', [
+    id,
+  ]);
   return r.rows[0];
 }
 
 export async function listDeployments(limit = 50, offset = 0) {
   // return most recent deployments, limited/offset to avoid large result sets
-  const r = await pool.query(
+  const r = await queryWithRetry(
     'SELECT * FROM deployments ORDER BY created_at DESC LIMIT $1 OFFSET $2',
     [limit, offset],
   );
@@ -153,28 +189,40 @@ export async function listDeployments(limit = 50, offset = 0) {
 }
 
 export async function countDeployments() {
-  const r = await pool.query('SELECT COUNT(*)::int AS cnt FROM deployments');
+  const r = await queryWithRetry(
+    'SELECT COUNT(*)::int AS cnt FROM deployments',
+  );
   return r.rows[0]?.cnt ?? 0;
 }
 
 export async function appendLog(deployment_id: string, message: string) {
   const ts = Date.now();
-  try {
-    await pool.query(
-      'INSERT INTO logs (deployment_id, ts, message) VALUES ($1,$2,$3)',
-      [deployment_id, ts, message],
-    );
-  } catch (e) {
-    console.warn(
-      'appendLog failed, continuing without persistence',
-      e?.message || e,
-    );
+  const maxRetries = 3;
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      await pool.query(
+        'INSERT INTO logs (deployment_id, ts, message) VALUES ($1,$2,$3)',
+        [deployment_id, ts, message],
+      );
+      return;
+    } catch (e: any) {
+      attempt++;
+      const msg = e?.message || String(e);
+      console.warn(`appendLog attempt ${attempt} failed: ${msg}`);
+      if (attempt >= maxRetries) {
+        console.warn('appendLog failed, continuing without persistence', msg);
+        return;
+      }
+      // exponential backoff before retrying
+      await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
+    }
   }
 }
 
 export async function readLogs(deployment_id: string, after = 0) {
   try {
-    const r = await pool.query(
+    const r = await queryWithRetry(
       'SELECT ts, message FROM logs WHERE deployment_id = $1 AND ts > $2 ORDER BY ts ASC',
       [deployment_id, after],
     );

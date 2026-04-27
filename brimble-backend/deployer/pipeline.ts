@@ -76,7 +76,9 @@ export async function runPipeline(
       emitter,
       id,
     ).catch(() => {});
-    await runCmd(
+    // run container and capture the container id output so stop can remove
+    // it reliably by id (docker run -d prints the container id on success)
+    const containerRunOut = await runCmdOutput(
       'docker',
       [
         'run',
@@ -90,9 +92,10 @@ export async function runPipeline(
       emitter,
       id,
     );
-    // record the container name so stop can remove it
+    const containerId = (containerRunOut || '').trim();
+    // record the container id if available, otherwise fall back to name
     const info = activeMap.get(id) || { procs: new Set() };
-    info.container = containerName;
+    info.container = containerId || containerName;
     activeMap.set(id, info);
 
     const url = `http://localhost:${hostPort}`;
@@ -212,48 +215,92 @@ async function stopDeployment(id: string, emitter: EventEmitterType) {
   const info = activeMap.get(id) as
     | { procs: Set<ChildProcess>; container?: string; stopped?: boolean }
     | undefined;
-  if (!info) return;
-  info.stopped = true;
   emitter.emit('log', 'Stopping deployment...');
-  // kill child procs
-  for (const p of Array.from(info.procs)) {
-    try {
-      p.kill('SIGTERM');
-    } catch (e) {}
+
+  // If we have an in-memory active entry, mark stopped and kill child procs
+  if (info) {
+    info.stopped = true;
+    // kill child procs
+    for (const p of Array.from(info.procs)) {
+      try {
+        p.kill('SIGTERM');
+      } catch (e) {}
+    }
   }
-  // remove docker container if present
-  if (info.container) {
+
+  // Helper: attempt to remove a container id or name
+  async function tryRemoveContainer(ident: string | undefined) {
+    if (!ident) return false;
     try {
-      // same suppression for stop path
       await runCmd(
-        'docker',
-        [
-          'run',
-          '-d',
-          '--name',
-          containerName,
-          '-p',
-          `${hostPort}:8080`,
-          imageTag,
-        ],
+        'sh',
+        ['-c', `docker rm -f ${ident} 2>/dev/null || true`],
         emitter,
         id,
-      );
-      // Try to capture the actual container id for reliable stop/remove later.
-      let containerId = null;
-      try {
-        containerId = await runCmdOutput(
+      ).catch(() => {});
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // First try removal using stored container id/name (if present)
+  let removed = false;
+  if (info && info.container) {
+    removed = await tryRemoveContainer(info.container).catch(() => false);
+  }
+
+  // If not removed, try to discover the container via docker ps filters
+  if (!removed) {
+    try {
+      // look for containers with name matching brimble_<id>
+      const byName = await runCmdOutput(
+        'sh',
+        ['-c', `docker ps -q -f name=brimble_${id}`],
+        emitter,
+        id,
+      ).catch(() => '');
+      const candidate = (byName || '')
+        .split('\n')
+        .map((s) => s.trim())
+        .find(Boolean);
+      if (candidate) {
+        removed = await tryRemoveContainer(candidate).catch(() => false);
+      }
+      // if still not found, try matching by image (brimble/<id>:latest)
+      if (!removed) {
+        const byImage = await runCmdOutput(
           'sh',
-          ['-c', `docker ps -q -f name=${containerName}`],
+          ['-c', `docker ps -q -f ancestor=brimble/${id}:latest`],
           emitter,
           id,
-        );
-      } catch (e) {
-        // ignore — fallback to using the container name
+        ).catch(() => '');
+        const cand2 = (byImage || '')
+          .split('\n')
+          .map((s) => s.trim())
+          .find(Boolean);
+        if (cand2) removed = await tryRemoveContainer(cand2).catch(() => false);
       }
-      const info = activeMap.get(id) || { procs: new Set() };
-      info.container = containerId && containerId.length > 0 ? containerId : containerName;
-      activeMap.set(id, info);
+    } catch (e) {
+      // ignore discovery errors
+    }
+  }
+
+  await updateDeployment(id, { status: 'stopped' }).catch(() => {});
+  appendLog(id, 'stopped by user').catch(() => {});
+  emitter.emit(
+    'log',
+    removed
+      ? 'stopped by user'
+      : 'stop requested (container may not have been running)',
+  );
+  if (info) activeMap.delete(id);
+}
+
+module.exports.stopDeployment = stopDeployment;
+
+function hash(s: string) {
+  let h = 0;
   for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i);
   return Math.abs(h);
 }
