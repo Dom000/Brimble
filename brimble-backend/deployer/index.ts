@@ -133,6 +133,35 @@ app.get('/api/deployments/:id/logs', async (req, res) => {
   });
 });
 
+// Plain-text logs download (copyable)
+app.get('/api/deployments/:id/logs.txt', async (req, res) => {
+  const id = req.params.id;
+  const past = await readLogs(id, 0);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${id}-deployer.log"`);
+  for (const p of past) {
+    const line = `[${new Date(p.ts).toISOString()}] ${p.message.replace(/\n$/, '')}\n`;
+    res.write(line);
+  }
+  res.end();
+});
+
+// Status endpoint suitable for Shields.io endpoint badges
+app.get('/api/deployments/:id/status', async (req, res) => {
+  const id = req.params.id;
+  const d = await getDeployment(id);
+  if (!d) return res.status(404).json({ error: 'not found' });
+  // Map deployment status to badge color
+  const status = d.status || 'unknown';
+  let color = 'lightgrey';
+  if (status === 'running') color = 'brightgreen';
+  else if (status === 'building' || status === 'pending') color = 'yellow';
+  else if (status === 'failed' || status === 'stopped') color = 'red';
+
+  // Shields.io endpoint expects: { schemaVersion, label, message, color }
+  res.json({ schemaVersion: 1, label: 'deploy', message: status, color });
+});
+
 app.post('/api/deployments/:id/stop', async (req, res) => {
   const id = req.params.id;
   const emitter = emitters.get(id);

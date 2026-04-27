@@ -108,7 +108,10 @@ export async function runPipeline(
       const snippet = `route /apps/${id}/* {\n  uri strip_prefix /apps/${id}\n  reverse_proxy 127.0.0.1:${hostPort}\n}\n`;
       fs.writeFileSync(path.join(caddyDir, `${id}.caddy`), snippet);
       await runCmd('caddy', ['reload'], emitter, id).catch(async (e) => {
-        emitter.emit('log', `caddy reload failed: ${String(e)}; attempting docker exec fallback`);
+        emitter.emit(
+          'log',
+          `caddy reload failed: ${String(e)}; attempting docker exec fallback`,
+        );
         // Try to reload Caddy inside the caddy container by finding a container
         // whose name contains 'caddy' and running `caddy reload` there. This
         // uses the docker CLI which should be available in the dev/deployer
@@ -121,7 +124,9 @@ export async function runPipeline(
           ],
           emitter,
           id,
-        ).catch((e2) => emitter.emit('log', `docker exec caddy reload failed: ${String(e2)}`));
+        ).catch((e2) =>
+          emitter.emit('log', `docker exec caddy reload failed: ${String(e2)}`),
+        );
       });
       await appendLog(id, `caddy updated -> /apps/${id}`);
     } catch (e: any) {
@@ -168,6 +173,41 @@ function runCmd(
   });
 }
 
+// Run a command and capture stdout (returns trimmed stdout). Useful for
+// commands where we need the output (e.g., container id from `docker ps`).
+function runCmdOutput(
+  cmd: string,
+  args: string[],
+  emitter: EventEmitterType,
+  id: string,
+  opts: any = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    const info = activeMap.get(id);
+    if (info) info.procs.add(p);
+    let out = '';
+    p.stdout.on('data', (d) => {
+      const s = d.toString();
+      out += s;
+      emitter.emit('log', s);
+      appendLog(id, s).catch(() => {});
+    });
+    p.stderr.on('data', (d) => {
+      const s = d.toString();
+      emitter.emit('log', s);
+      appendLog(id, s).catch(() => {});
+    });
+    p.on('error', (err) => reject(err));
+    p.on('close', (code) => {
+      const info = activeMap.get(id);
+      if (info) info.procs.delete(p);
+      if (code === 0) resolve(out.trim());
+      else reject(new Error(`${cmd} exited ${code}`));
+    });
+  });
+}
+
 async function stopDeployment(id: string, emitter: EventEmitterType) {
   const info = activeMap.get(id) as
     | { procs: Set<ChildProcess>; container?: string; stopped?: boolean }
@@ -186,23 +226,34 @@ async function stopDeployment(id: string, emitter: EventEmitterType) {
     try {
       // same suppression for stop path
       await runCmd(
-        'sh',
-        ['-c', `docker rm -f ${info.container} 2>/dev/null || true`],
+        'docker',
+        [
+          'run',
+          '-d',
+          '--name',
+          containerName,
+          '-p',
+          `${hostPort}:8080`,
+          imageTag,
+        ],
         emitter,
         id,
-      ).catch(() => {});
-    } catch (e) {}
-  }
-  await updateDeployment(id, { status: 'stopped' }).catch(() => {});
-  appendLog(id, 'stopped by user').catch(() => {});
-  emitter.emit('log', 'stopped by user');
-  activeMap.delete(id);
-}
-
-module.exports.stopDeployment = stopDeployment;
-
-function hash(s: string) {
-  let h = 0;
+      );
+      // Try to capture the actual container id for reliable stop/remove later.
+      let containerId = null;
+      try {
+        containerId = await runCmdOutput(
+          'sh',
+          ['-c', `docker ps -q -f name=${containerName}`],
+          emitter,
+          id,
+        );
+      } catch (e) {
+        // ignore — fallback to using the container name
+      }
+      const info = activeMap.get(id) || { procs: new Set() };
+      info.container = containerId && containerId.length > 0 ? containerId : containerName;
+      activeMap.set(id, info);
   for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i);
   return Math.abs(h);
 }
