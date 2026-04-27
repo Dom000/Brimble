@@ -58,17 +58,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      DATABASE_URL: "postgres://brimble:brimble@db:5432/brimble_dev"
-      RAILPACK_BIN: "/workspace/tools/railpack"
-      CADDY_SNIPPETS_DIR: "/workspace/Caddyfile.d"
-      PG_SSL: "false"
-    ports:
-      - "3000:3000" # backend (nest)
-      - "5173:5173" # client (vite)
-    depends_on:
-      db:
-        condition: service_healthy
+    # (no duplicate environment/ports blocks)
 
   caddy:
     image: caddy:2
