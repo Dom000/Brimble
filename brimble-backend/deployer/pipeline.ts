@@ -1,6 +1,7 @@
 const { EventEmitter } = require('events');
 import { EventEmitter as EventEmitterType } from 'events';
 import { ChildProcess } from 'child_process';
+import { log } from 'util';
 const { updateDeployment, appendLog } = require('./db');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -49,7 +50,7 @@ export async function runPipeline(
           path.join(workdir, path.basename(opts.uploadPath)),
         );
       } catch (e) {
-        // ignore copy errors for now
+        console.log('Failed to copy uploaded project');
       }
     } else {
       throw new Error('no source provided');
@@ -282,7 +283,7 @@ async function stopDeployment(id: string, emitter: EventEmitterType) {
         if (cand2) removed = await tryRemoveContainer(cand2).catch(() => false);
       }
     } catch (e) {
-      // ignore discovery errors
+      console.log(e);
     }
   }
 

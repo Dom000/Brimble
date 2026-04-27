@@ -1,5 +1,3 @@
-// Load local .env automatically so `yarn workspace ... run deployer:dev` works
-// without the caller having to `set -a && . ./.env`.
 try {
   require('dotenv').config();
 } catch (e) {}
@@ -102,6 +100,9 @@ app.post(
     if (uploaded) opts.uploadPath = uploaded.path;
 
     // start pipeline but don't await
+    //  runPipeline(id, opts, emitter).catch((err) =>
+    //   console.error('pipeline error', err.message || err),
+    // );
     runPipeline(id, opts, emitter).catch((err) =>
       console.error('pipeline error', err),
     );
@@ -150,20 +151,20 @@ app.get('/api/deployments/:id/logs.txt', async (req, res) => {
 });
 
 // Status endpoint suitable for Shields.io endpoint badges
-app.get('/api/deployments/:id/status', async (req, res) => {
-  const id = req.params.id;
-  const d = await getDeployment(id);
-  if (!d) return res.status(404).json({ error: 'not found' });
-  // Map deployment status to badge color
-  const status = d.status || 'unknown';
-  let color = 'lightgrey';
-  if (status === 'running') color = 'brightgreen';
-  else if (status === 'building' || status === 'pending') color = 'yellow';
-  else if (status === 'failed' || status === 'stopped') color = 'red';
+// app.get('/api/deployments/:id/status', async (req, res) => {
+//   const id = req.params.id;
+//   const d = await getDeployment(id);
+//   if (!d) return res.status(404).json({ error: 'not found' });
+//   // Map deployment status to badge color
+//   const status = d.status || 'unknown';
+//   let color = 'lightgrey';
+//   if (status === 'running') color = 'brightgreen';
+//   else if (status === 'building' || status === 'pending') color = 'yellow';
+//   else if (status === 'failed' || status === 'stopped') color = 'red';
 
-  // Shields.io endpoint expects: { schemaVersion, label, message, color }
-  res.json({ schemaVersion: 1, label: 'deploy', message: status, color });
-});
+//   // Shields.io endpoint expects: { schemaVersion, label, message, color }
+//   res.json({ schemaVersion: 1, label: 'deploy', message: status, color });
+// });
 
 app.post('/api/deployments/:id/stop', async (req, res) => {
   const id = req.params.id;
@@ -176,7 +177,6 @@ app.post('/api/deployments/:id/stop', async (req, res) => {
     transient = true;
   }
   try {
-    // Run stop asynchronously and return immediately so client isn't blocked
     stopDeployment(id, emitter).catch((e: any) =>
       console.error('stopDeployment failed', e),
     );
