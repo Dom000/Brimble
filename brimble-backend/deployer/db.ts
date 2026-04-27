@@ -69,6 +69,12 @@ pool.on('error', (err: Error) => {
   console.error('pg pool error', err?.message || err);
 });
 
+function isTransientConnectionError(msg: string) {
+  return /timeout exceeded when trying to connect|ECONNRESET|ENETUNREACH|connect timed out|ETIMEDOUT|EHOSTUNREACH|Connection terminated unexpectedly/i.test(
+    msg,
+  );
+}
+
 // Helper: run a query with retries/backoff for transient connection issues.
 async function queryWithRetry(sql: string, params: any[] = [], maxRetries = 3) {
   let attempt = 0;
@@ -95,16 +101,42 @@ async function queryWithRetry(sql: string, params: any[] = [], maxRetries = 3) {
   }
 }
 
-// Warm up one connection at startup to reduce first-request latency.
-(async function warmPool() {
-  try {
-    const c = await pool.connect();
-    c.release();
-    console.log('pg pool warmed');
-  } catch (e: any) {
-    console.warn('pg pool warm failed', e?.message ?? e);
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureDbReady() {
+  const retries = parseInt(process.env.PG_BOOT_RETRIES || '20', 10);
+  const delayMs = parseInt(process.env.PG_BOOT_RETRY_DELAY_MS || '1500', 10);
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await pool.query('SELECT 1');
+      if (attempt > 1) {
+        console.log(`postgres became ready on attempt ${attempt}/${retries}`);
+      } else {
+        console.log('postgres ready');
+      }
+      return;
+    } catch (e: any) {
+      lastError = e;
+      const msg = e?.message || String(e);
+      console.warn(
+        `postgres not ready (attempt ${attempt}/${retries}): ${msg}`,
+      );
+      if (attempt < retries) {
+        await sleep(delayMs);
+      }
+    }
   }
-})();
+
+  const msg = lastError?.message || String(lastError || 'unknown error');
+  console.error(
+    `deployer startup failed: unable to connect to postgres after ${retries} attempts (${msg})`,
+  );
+  process.exit(1);
+}
 
 async function ensureSchema() {
   await queryWithRetry(`
@@ -131,9 +163,15 @@ async function ensureSchema() {
   `);
 }
 
-ensureSchema().catch((err) => {
-  console.error('failed to ensure schema', err);
-});
+(async function initDatabase() {
+  try {
+    await ensureDbReady();
+    await ensureSchema();
+  } catch (err: any) {
+    console.error('deployer startup failed during schema init', err);
+    process.exit(1);
+  }
+})();
 
 export async function insertDeployment(d: {
   id: string;
@@ -182,7 +220,7 @@ export async function getDeployment(id: string) {
 export async function listDeployments(limit = 50, offset = 0) {
   // return most recent deployments, limited/offset to avoid large result sets
   const r = await queryWithRetry(
-    'SELECT * FROM deployments ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+    'SELECT id, created_at, git_url, status, url FROM deployments ORDER BY created_at DESC LIMIT $1 OFFSET $2',
     [limit, offset],
   );
   return r.rows;
@@ -196,26 +234,64 @@ export async function countDeployments() {
 }
 
 export async function appendLog(deployment_id: string, message: string) {
+  const now = Date.now();
+  const muteMs = parseInt(process.env.PG_APPENDLOG_MUTE_MS || '15000', 10);
+  const maxRetries = parseInt(process.env.PG_APPENDLOG_RETRIES || '3', 10);
+  const warnEveryMs = parseInt(
+    process.env.PG_APPENDLOG_WARN_EVERY_MS || '10000',
+    10,
+  );
+  const state = (globalThis as any).__pgAppendLogState || {
+    mutedUntil: 0,
+    lastWarnAt: 0,
+  };
+  (globalThis as any).__pgAppendLogState = state;
+
+  if (now < state.mutedUntil) {
+    return;
+  }
+
   const ts = Date.now();
-  const maxRetries = 3;
   let attempt = 0;
+  let lastError: any = null;
   while (attempt < maxRetries) {
     try {
       await pool.query(
         'INSERT INTO logs (deployment_id, ts, message) VALUES ($1,$2,$3)',
         [deployment_id, ts, message],
       );
+      state.mutedUntil = 0;
       return;
     } catch (e: any) {
+      lastError = e;
       attempt++;
       const msg = e?.message || String(e);
-      console.warn(`appendLog attempt ${attempt} failed: ${msg}`);
+      const transient = isTransientConnectionError(msg);
       if (attempt >= maxRetries) {
-        console.warn('appendLog failed, continuing without persistence', msg);
+        if (transient) {
+          state.mutedUntil = Date.now() + muteMs;
+        }
+        if (Date.now() - state.lastWarnAt > warnEveryMs) {
+          console.warn(
+            `appendLog failed after ${attempt} attempts: ${msg}${transient ? `; muting for ${muteMs}ms` : ''}`,
+          );
+          state.lastWarnAt = Date.now();
+        }
         return;
+      }
+      if (!transient) {
+        break;
       }
       // exponential backoff before retrying
       await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
+    }
+  }
+
+  if (lastError) {
+    const msg = lastError?.message || String(lastError);
+    if (Date.now() - state.lastWarnAt > warnEveryMs) {
+      console.warn(`appendLog failed, continuing without persistence: ${msg}`);
+      state.lastWarnAt = Date.now();
     }
   }
 }

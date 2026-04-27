@@ -14,6 +14,7 @@ type EventEmitterType = InstanceType<typeof EventEmitter>;
 const {
   insertDeployment,
   listDeployments,
+  countDeployments,
   getDeployment,
   readLogs,
   appendLog,
@@ -42,28 +43,41 @@ app.get('/api/deployments', async (req, res) => {
   if (!Number.isNaN(l) && l > 0 && l <= 1000) limit = l;
   if (!Number.isNaN(o) && o >= 0) offset = o;
 
+  if (includeTotal) {
+    const start = Date.now();
+    const listStart = Date.now();
+    const listPromise = listDeployments(limit, offset).then((rows: any[]) => {
+      res.setHeader('X-List-Time-Ms', String(Date.now() - listStart));
+      return rows;
+    });
+
+    const countStart = Date.now();
+    const countPromise = countDeployments()
+      .then((total: number) => {
+        res.setHeader('X-Count-Time-Ms', String(Date.now() - countStart));
+        return total;
+      })
+      .catch((e: any) => {
+        console.error('count failed', e);
+        return null;
+      });
+
+    const [rows, total] = await Promise.all([listPromise, countPromise]);
+    const dbTime = Date.now() - start;
+    console.log(
+      `GET /api/deployments limit=${limit} offset=${offset} db_ms=${dbTime} includeTotal=1`,
+    );
+    res.setHeader('X-DB-Time-Ms', String(dbTime));
+    return res.json({ rows, total });
+  }
+
   const start = Date.now();
   const rows = await listDeployments(limit, offset);
   const dbTime = Date.now() - start;
-  // log timing for diagnosis
   console.log(
     `GET /api/deployments limit=${limit} offset=${offset} db_ms=${dbTime}`,
   );
   res.setHeader('X-DB-Time-Ms', String(dbTime));
-
-  if (includeTotal) {
-    let total = null;
-    try {
-      const tstart = Date.now();
-      total = await require('./db').countDeployments();
-      const tdb = Date.now() - tstart;
-      console.log(`countDeployments db_ms=${tdb}`);
-      res.setHeader('X-Count-Time-Ms', String(tdb));
-    } catch (e) {
-      console.error('count failed', e);
-    }
-    return res.json({ rows, total });
-  }
 
   // Backwards-compatible: return array when total not requested.
   return res.json(rows);
@@ -117,16 +131,16 @@ app.get('/api/deployments/:id/logs', async (req, res) => {
   res.flushHeaders?.();
 
   const emitter = emitters.get(id) || new EventEmitter();
-  const send = (msg: string) => {
-    appendLog(id, msg);
+  const send = (msg: string, persist = true) => {
+    if (persist) appendLog(id, msg);
     res.write(`data: ${JSON.stringify({ ts: Date.now(), message: msg })}\n\n`);
   };
 
   // replay recent logs
   const past = await readLogs(id, 0);
-  for (const p of past) send(p.message);
+  for (const p of past) send(p.message, false);
 
-  const onLog = (m: any) => send(String(m));
+  const onLog = (m: any) => send(String(m), true);
   emitter.on('log', onLog);
 
   req.on('close', () => {
@@ -144,7 +158,14 @@ app.get('/api/deployments/:id/logs.txt', async (req, res) => {
     `attachment; filename="${id}-deployer.log"`,
   );
   for (const p of past) {
-    const line = `[${new Date(p.ts).toISOString()}] ${p.message.replace(/\n$/, '')}\n`;
+    const rawTs = Number(p?.ts);
+    const parsedDate = Number.isFinite(rawTs) ? new Date(rawTs) : null;
+    const tsIso =
+      parsedDate && Number.isFinite(parsedDate.getTime())
+        ? parsedDate.toISOString()
+        : new Date().toISOString();
+    const msg = String(p?.message ?? '').replace(/\n$/, '');
+    const line = `[${tsIso}] ${msg}\n`;
     res.write(line);
   }
   res.end();

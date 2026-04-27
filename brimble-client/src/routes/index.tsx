@@ -1,5 +1,6 @@
 import React from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -15,13 +16,13 @@ function App() {
         <ThemeToggle />
       </div>
       <div className=" px-10 md:px-20">
-        <div className="w-2/5">
+        <div className="w-2/5 mb-8">
           <div className="card">
             <h2 className="text-lg font-semibold mb-3">Create Deployment</h2>
             <CreateForm />
           </div>
         </div>
-        <div className="md:col-span-2">
+        <div className="md:col-span-2 card">
           <ProjectsList />
         </div>
       </div>
@@ -114,27 +115,16 @@ function CreateForm() {
 }
 
 function ProjectsList() {
-  const [list, setList] = React.useState<any[]>([])
-
-  React.useEffect(() => {
-    let mounted = true
-    const first = { current: true }
-    async function load() {
-      const qs = first.current ? '?limit=50&includeTotal=1' : '?limit=50'
-      const res = await fetch(`http://localhost:5100/api/deployments${qs}`)
-      if (!res.ok) return
+  const { data: list = [], isLoading } = useQuery({
+    queryKey: ['deployments', 50],
+    queryFn: async () => {
+      const res = await fetch('http://localhost:5100/api/deployments?limit=50')
+      if (!res.ok) throw new Error(`Failed to fetch deployments: ${res.status}`)
       const data = await res.json()
-      const rows = Array.isArray(data) ? data : (data?.rows ?? [])
-      if (mounted) setList(rows)
-      first.current = false
-    }
-    load()
-    const t = setInterval(load, 7000)
-    return () => {
-      mounted = false
-      clearInterval(t)
-    }
-  }, [])
+      return Array.isArray(data) ? data : (data?.rows ?? [])
+    },
+    refetchInterval: 7000,
+  })
 
   const projects = React.useMemo(() => {
     const m: Record<string, any[]> = {}
@@ -160,6 +150,9 @@ function ProjectsList() {
   return (
     <div>
       <h2 className="text-xl font-semibold mb-2">Projects</h2>
+      {isLoading && (
+        <div className="text-sm text-slate-500">Loading deployments…</div>
+      )}
       <div className="space-y-4">
         {Object.keys(projects).length === 0 && (
           <div className="text-sm text-slate-500">No deployments yet</div>
@@ -169,7 +162,7 @@ function ProjectsList() {
             <div className="font-semibold">{proj}</div>
             <div className="mt-2 space-y-2">
               {deployments.map((d) => (
-                <DeploymentItem key={d.id} d={d} />
+                <DeploymentListItem key={d.id} d={d} />
               ))}
             </div>
           </div>
@@ -179,63 +172,34 @@ function ProjectsList() {
   )
 }
 
-function DeploymentItem({ d }: { d: any }) {
-  const [logs, setLogs] = React.useState<string[]>([])
+function DeploymentListItem({ d }: { d: any }) {
   const [isStopping, setIsStopping] = React.useState(false)
-
-  React.useEffect(() => {
-    const es = new EventSource(
-      `http://localhost:5100/api/deployments/${d.id}/logs`,
-    )
-    es.onmessage = (ev) => {
-      try {
-        const obj = JSON.parse(ev.data)
-        setLogs((s) => [
-          ...s,
-          `${new Date(obj.ts).toLocaleTimeString()}: ${obj.message}`,
-        ])
-      } catch {}
-    }
-    return () => es.close()
-  }, [d.id])
-
-  function renderLine(line: string, idx: number) {
-    const l = line.toLowerCase()
-    const cls =
-      l.includes('error') || l.includes('failed')
-        ? 'log-error'
-        : l.includes('warn')
-          ? 'log-warn'
-          : l.includes('running') ||
-              l.includes('finished') ||
-              l.includes('complete')
-            ? 'log-ok'
-            : 'log-info'
-    return (
-      <span key={idx} className={`log-line ${cls}`}>
-        {line}
-      </span>
-    )
-  }
 
   return (
     <div className="card">
       <div className="flex justify-between items-start">
         <div>
-          <div className="font-medium">{d.id}</div>
+          <Link
+            to="/deployments/$id"
+            params={{ id: d.id }}
+            className="font-medium underline"
+          >
+            {d.id}
+          </Link>
           <div className="text-sm muted">{d.git_url || 'uploaded'}</div>
         </div>
         <div className="text-right">
           <div className="text-sm">
             {(() => {
-              const s = String(d.status || 'unknown').toLowerCase();
-              const cls = s === 'running'
-                ? 'bg-green-500 text-white'
-                : s === 'building' || s === 'deploying' || s === 'pending'
-                ? 'bg-yellow-400 text-black'
-                : s === 'failed' || s === 'stopped'
-                ? 'bg-red-500 text-white'
-                : 'bg-gray-400 text-white';
+              const s = String(d.status || 'unknown').toLowerCase()
+              const cls =
+                s === 'running'
+                  ? 'bg-green-500 text-white'
+                  : s === 'building' || s === 'deploying' || s === 'pending'
+                    ? 'bg-yellow-400 text-black'
+                    : s === 'failed' || s === 'stopped'
+                      ? 'bg-red-500 text-white'
+                      : 'bg-gray-400 text-white'
               return (
                 <span
                   className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}
@@ -270,14 +234,15 @@ function DeploymentItem({ d }: { d: any }) {
           </button>
         )}
       </div>
-      <details className="mt-2">
-        <summary className="cursor-pointer">Logs ({logs.length})</summary>
-        <div className="max-h-64 overflow-auto p-2 mt-2 bg-black/5 dark:bg-black/40 rounded">
-          <div className="text-xs">
-            {logs.map((ln, i) => renderLine(ln, i))}
-          </div>
-        </div>
-      </details>
+      <div className="mt-2 text-sm">
+        <Link
+          to="/deployments/$id"
+          params={{ id: d.id }}
+          className="text-blue-600 underline"
+        >
+          View deployment details
+        </Link>
+      </div>
     </div>
   )
 }
