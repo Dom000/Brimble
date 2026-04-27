@@ -18,17 +18,46 @@ services:
       retries: 5
 
   dev:
-    image: node:20
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     working_dir: /workspace
     command:
       [
         "/bin/sh",
         "-c",
-        "corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn dev",
+        "chmod +x /workspace/tools/railpack 2>/dev/null || true && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn dev",
       ]
     volumes:
       - ./:/workspace:cached
       - /workspace/node_modules
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  deployer:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace/brimble-backend
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "chmod +x /workspace/tools/railpack 2>/dev/null || true && export PATH=/workspace/tools:$PATH && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn workspace brimble-backend run deployer:dev",
+      ]
+    volumes:
+      - ./:/workspace:cached
+      - /workspace/node_modules
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DATABASE_URL: "postgres://brimble:brimble@db:5432/brimble_dev"
+      RAILPACK_BIN: "/workspace/tools/railpack"
+      CADDY_SNIPPETS_DIR: "/workspace/Caddyfile.d"
+      PG_SSL: "false"
+    ports:
+      - "5100:5100"
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: "postgres://brimble:brimble@db:5432/brimble_dev"
       RAILPACK_BIN: "/workspace/tools/railpack"
