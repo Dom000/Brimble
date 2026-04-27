@@ -28,8 +28,8 @@ if [[ -f package.json ]] && grep -q '"build"' package.json; then
   fi
   if command -v yarn >/dev/null 2>&1; then
     echo "railpack: running yarn install && yarn build"
-    yarn install --frozen-lockfile --silent || yarn install --silent || true
-    yarn build || echo "railpack: yarn build failed, continuing to create image"
+    yarn install --frozen-lockfile --silent || yarn install --silent
+    yarn build
   else
     echo "railpack: yarn not found, skipping build step"
   fi
