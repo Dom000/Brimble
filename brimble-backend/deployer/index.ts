@@ -165,6 +165,41 @@ app.get('/api/deployments/:id/status', async (req, res) => {
   res.json({ schemaVersion: 1, label: 'deploy', message: status, color });
 });
 
+// Simple SVG badge served locally so badge colors update correctly even when
+// Shields.io can't reach localhost. Usage: /api/deployments/:id/badge.svg
+app.get('/api/deployments/:id/badge.svg', async (req, res) => {
+  const id = req.params.id;
+  const d = await getDeployment(id);
+  if (!d) return res.status(404).send('Not found');
+  const status = d.status || 'unknown';
+  let color = '#9CA3AF'; // gray
+  if (status === 'running') color = '#16A34A'; // green
+  else if (status === 'building' || status === 'pending') color = '#F59E0B'; // yellow
+  else if (status === 'failed' || status === 'stopped') color = '#EF4444'; // red
+
+  const label = 'deploy';
+  const message = status;
+  const svg = `<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="110" height="20">
+  <linearGradient id="b" x2="0" y2="100%">
+    <stop offset="0" stop-color="#fff" stop-opacity=".7"/>
+    <stop offset="1" stop-opacity=".7"/>
+  </linearGradient>
+  <rect rx="3" width="110" height="20" fill="#555"/>
+  <rect rx="3" x="60" width="50" height="20" fill="${color}"/>
+  <path fill="${color}" d="M60 0h4v20h-4z"/>
+  <rect rx="3" width="110" height="20" fill="url(#b)"/>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,sans-serif" font-size="11">
+    <text x="30" y="14">${label}</text>
+    <text x="85" y="14">${message}</text>
+  </g>
+</svg>`;
+
+  res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(svg);
+});
+
 app.post('/api/deployments/:id/stop', async (req, res) => {
   const id = req.params.id;
   const emitter = emitters.get(id);

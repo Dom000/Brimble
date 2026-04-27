@@ -227,6 +227,13 @@ function DeploymentItem({ d }: { d: any }) {
         </div>
         <div className="text-right">
           <div className="text-sm muted">{d.status}</div>
+          <div className="text-sm muted">
+            <img
+              src={`http://localhost:5100/api/deployments/${d.id}/badge.svg`}
+              alt={d.status}
+              style={{ height: 18 }}
+            />
+          </div>
           <div className="text-sm muted">{d.image_tag || '-'}</div>
           <div className="text-sm text-accent">
             {d.url ? <a href={d.url}>{d.url}</a> : null}
