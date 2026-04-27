@@ -42,7 +42,7 @@ services:
       [
         "/bin/sh",
         "-c",
-        "chmod +x /workspace/tools/railpack 2>/dev/null || true && export PATH=/workspace/tools:$PATH && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn workspace brimble-backend run deployer:dev",
+        "chmod +x /workspace/tools/railpack 2>/dev/null || true && export PATH=\"/workspace/tools:$PATH\" && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn workspace brimble-backend run deployer:dev",
       ]
     volumes:
       - ./:/workspace:cached
