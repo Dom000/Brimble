@@ -32,6 +32,9 @@ services:
       - ./:/workspace:cached
       - /workspace/node_modules
       - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "3000:3000" # backend (nest)
+      - "5173:5173" # client (vite)
 
   deployer:
     build:
@@ -42,7 +45,7 @@ services:
       [
         "/bin/sh",
         "-c",
-        "chmod +x /workspace/tools/railpack 2>/dev/null || true && export PATH=\"/workspace/tools:$PATH\" && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn workspace brimble-backend run deployer:dev",
+        'chmod +x /workspace/tools/railpack 2>/dev/null || true && export PATH="/workspace/tools:$PATH" && corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn workspace brimble-backend run deployer:dev',
       ]
     volumes:
       - ./:/workspace:cached
@@ -58,7 +61,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # (no duplicate environment/ports blocks)
 
   caddy:
     image: caddy:2
