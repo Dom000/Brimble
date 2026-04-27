@@ -1,0 +1,17 @@
+FROM node:20
+
+# Install Docker CLI (using the distro package for simplicity)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release apt-transport-https \
+ && apt-get install -y --no-install-recommends docker.io \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Ensure tools/railpack is executable if present at build time (no-op if not)
+RUN mkdir -p /workspace/tools || true
+RUN chmod +x /workspace/tools/railpack 2>/dev/null || true
+
+ENV PATH="/workspace/tools:${PATH}"
+
+CMD ["/bin/sh", "-c", "corepack enable && corepack prepare yarn@3.5.0 --activate && yarn install --frozen-lockfile --silent || yarn install --silent && yarn dev"]

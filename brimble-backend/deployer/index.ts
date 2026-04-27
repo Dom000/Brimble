@@ -138,7 +138,10 @@ app.get('/api/deployments/:id/logs.txt', async (req, res) => {
   const id = req.params.id;
   const past = await readLogs(id, 0);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${id}-deployer.log"`);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${id}-deployer.log"`,
+  );
   for (const p of past) {
     const line = `[${new Date(p.ts).toISOString()}] ${p.message.replace(/\n$/, '')}\n`;
     res.write(line);
